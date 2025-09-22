@@ -570,7 +570,7 @@ async def health_check():
 
 @app.get('/')
 async def root():
-    return {"message": "Welcome to DriverLink API"}
+    return {"Hello": "World"}
 
 if __name__ == "__main__":
     uvicorn.run(
