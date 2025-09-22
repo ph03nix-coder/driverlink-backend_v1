@@ -10,8 +10,8 @@ from typing import List, Optional
 
 # Import all modules
 from database import engine, get_db, Base
-from models import User, Driver, Order, OrderNotification, UserType, DriverStatus, OrderStatus, ApprovalStatus
-from schemas import *
+from models import User as UserModel, Driver as DriverModel, Order as OrderModel, OrderNotification as OrderNotificationModel, UserType, DriverStatus, OrderStatus, ApprovalStatus
+import schemas
 from auth import get_password_hash, authenticate_user, create_access_token, verify_token, get_current_active_user
 from websocket_manager import manager, handle_websocket_connection
 from services.file_service import file_service
@@ -48,36 +48,36 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     return get_current_active_user(db, token)
 
 # Dependency to check if user is a store
-def get_current_store(current_user: User = Depends(get_current_user)):
+def get_current_store(current_user: UserModel = Depends(get_current_user)):
     if current_user.user_type != UserType.STORE:
         raise HTTPException(status_code=403, detail="Access denied. Store account required.")
     return current_user
 
 # Dependency to check if user is a driver
-def get_current_driver_user(current_user: User = Depends(get_current_user)):
+def get_current_driver_user(current_user: UserModel = Depends(get_current_user)):
     if current_user.user_type != UserType.DRIVER:
         raise HTTPException(status_code=403, detail="Access denied. Driver account required.")
     return current_user
 
 # Dependency to get driver profile
-def get_current_driver(current_user: User = Depends(get_current_driver_user), db: Session = Depends(get_db)):
-    driver = db.query(Driver).filter(Driver.user_id == current_user.id).first()
+def get_current_driver(current_user: UserModel = Depends(get_current_driver_user), db: Session = Depends(get_db)):
+    driver = db.query(DriverModel).filter(DriverModel.user_id == current_user.id).first()
     if not driver:
         raise HTTPException(status_code=404, detail="Driver profile not found")
     return driver
 
 # Authentication endpoints
-@app.post("/auth/register", response_model=User)
-async def register_user(user: UserCreate, db: Session = Depends(get_db)):
+@app.post("/auth/register", response_model=schemas.User)
+async def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     """Register a new user (store or driver)"""
     # Check if user already exists
-    db_user = db.query(User).filter(User.email == user.email).first()
+    db_user = db.query(UserModel).filter(UserModel.email == user.email).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
     # Create new user
     hashed_password = get_password_hash(user.password)
-    db_user = User(
+    db_user = UserModel(
         email=user.email,
         hashed_password=hashed_password,
         user_type=user.user_type
@@ -88,8 +88,8 @@ async def register_user(user: UserCreate, db: Session = Depends(get_db)):
     
     return db_user
 
-@app.post("/auth/login", response_model=Token)
-async def login_user(user_login: UserLogin, db: Session = Depends(get_db)):
+@app.post("/auth/login", response_model=schemas.Token)
+async def login_user(user_login: schemas.UserLogin, db: Session = Depends(get_db)):
     """Authenticate user and return JWT token"""
     user = authenticate_user(db, user_login.email, user_login.password)
     if not user:
@@ -105,8 +105,8 @@ async def login_user(user_login: UserLogin, db: Session = Depends(get_db)):
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get("/auth/me", response_model=User)
-async def get_current_user_info(current_user: User = Depends(get_current_user)):
+@app.get("/auth/me", response_model=schemas.User)
+async def get_current_user_info(current_user: UserModel = Depends(get_current_user)):
     """Get current user information"""
     return current_user
 
@@ -199,16 +199,16 @@ async def update_driver_status(
     
     return {"message": f"Status updated to {status_update.status}"}
 
-@app.get("/drivers/me", response_model=Driver)
-async def get_my_driver_profile(current_driver: Driver = Depends(get_current_driver)):
+@app.get("/drivers/me", response_model=schemas.Driver)
+async def get_my_driver_profile(current_driver: DriverModel = Depends(get_current_driver)):
     """Get current driver's profile"""
     return current_driver
 
 # Order management endpoints
-@app.post("/orders", response_model=Order)
+@app.post("/orders", response_model=schemas.Order)
 async def create_order(
-    order: OrderCreate,
-    current_store: User = Depends(get_current_store),
+    order: schemas.OrderCreate,
+    current_store: UserModel = Depends(get_current_store),
     db: Session = Depends(get_db)
 ):
     """Create a new delivery order"""
@@ -219,7 +219,7 @@ async def create_order(
     route_info = osrm_client.get_distance_and_duration(pickup_location, delivery_location)
     
     # Create order
-    db_order = Order(
+    db_order = OrderModel(
         **order.dict(),
         store_id=current_store.id,
         estimated_distance_km=route_info["distance_km"] if route_info else None,
@@ -235,7 +235,7 @@ async def create_order(
     
     if suitable_drivers:
         # Create WebSocket notification
-        order_notification = OrderNotificationWS(
+        order_notification = schemas.OrderNotificationWS(
             order_id=db_order.id,
             pickup_address=db_order.pickup_address,
             delivery_address=db_order.delivery_address,
@@ -251,25 +251,25 @@ async def create_order(
     
     return db_order
 
-@app.get("/orders", response_model=OrderListResponse)
+@app.get("/orders", response_model=schemas.OrderListResponse)
 async def get_orders(
     status: Optional[OrderStatus] = None,
     limit: int = Query(50, le=100),
     offset: int = Query(0, ge=0),
-    current_user: User = Depends(get_current_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get orders (filtered by current user type)"""
-    query = db.query(Order)
+    query = db.query(OrderModel)
     
     if current_user.user_type == UserType.STORE:
-        query = query.filter(Order.store_id == current_user.id)
+        query = query.filter(OrderModel.store_id == current_user.id)
     elif current_user.user_type == UserType.DRIVER:
-        driver = db.query(Driver).filter(Driver.user_id == current_user.id).first()
+        driver = db.query(DriverModel).filter(DriverModel.user_id == current_user.id).first()
         if driver:
-            query = query.filter(Order.driver_id == driver.id)
+            query = query.filter(OrderModel.driver_id == driver.id)
         else:
-            return OrderListResponse(orders=[], total=0)
+            return schemas.OrderListResponse(orders=[], total=0)
     
     if status:
         query = query.filter(Order.status == status)
@@ -277,16 +277,16 @@ async def get_orders(
     total = query.count()
     orders = query.offset(offset).limit(limit).all()
     
-    return OrderListResponse(orders=orders, total=total)
+    return schemas.OrderListResponse(orders=orders, total=total)
 
-@app.get("/orders/{order_id}", response_model=Order)
+@app.get("/orders/{order_id}", response_model=schemas.Order)
 async def get_order(
     order_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get specific order details"""
-    order = db.query(Order).filter(Order.id == order_id).first()
+    order = db.query(OrderModel).filter(OrderModel.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
@@ -294,7 +294,7 @@ async def get_order(
     if current_user.user_type == UserType.STORE and order.store_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     elif current_user.user_type == UserType.DRIVER:
-        driver = db.query(Driver).filter(Driver.user_id == current_user.id).first()
+        driver = db.query(DriverModel).filter(DriverModel.user_id == current_user.id).first()
         if not driver or order.driver_id != driver.id:
             raise HTTPException(status_code=403, detail="Access denied")
     
@@ -303,7 +303,7 @@ async def get_order(
 @app.post("/orders/{order_id}/accept")
 async def accept_order(
     order_id: int,
-    current_driver: Driver = Depends(get_current_driver),
+    current_driver: DriverModel = Depends(get_current_driver),
     db: Session = Depends(get_db)
 ):
     """Accept a delivery order (first-come-first-served)"""
@@ -332,7 +332,7 @@ async def accept_order(
 @app.post("/orders/{order_id}/reject")
 async def reject_order(
     order_id: int,
-    current_driver: Driver = Depends(get_current_driver),
+    current_driver: DriverModel = Depends(get_current_driver),
     db: Session = Depends(get_db)
 ):
     """Reject a delivery order"""
@@ -342,14 +342,14 @@ async def reject_order(
 @app.put("/orders/{order_id}/status")
 async def update_order_status(
     order_id: int,
-    status_update: OrderStatusUpdate,
-    current_driver: Driver = Depends(get_current_driver),
+    status_update: schemas.OrderStatusUpdate,
+    current_driver: DriverModel = Depends(get_current_driver),
     db: Session = Depends(get_db)
 ):
     """Update order status (pickup, delivered, etc.)"""
-    order = db.query(Order).filter(
-        Order.id == order_id,
-        Order.driver_id == current_driver.id
+    order = db.query(OrderModel).filter(
+        OrderModel.id == order_id,
+        OrderModel.driver_id == current_driver.id
     ).first()
     
     if not order:
@@ -391,18 +391,18 @@ async def approval_webhook(approval_data: dict, db: Session = Depends(get_db)):
 # Statistics endpoints
 @app.get("/stats/drivers")
 async def get_driver_stats(
-    current_driver: Driver = Depends(get_current_driver),
+    current_driver: DriverModel = Depends(get_current_driver),
     db: Session = Depends(get_db)
 ):
     """Get driver statistics"""
-    total_deliveries = db.query(Order).filter(
-        Order.driver_id == current_driver.id,
-        Order.status == OrderStatus.DELIVERED
+    total_deliveries = db.query(OrderModel).filter(
+        OrderModel.driver_id == current_driver.id,
+        OrderModel.status == OrderStatus.DELIVERED
     ).count()
     
-    pending_deliveries = db.query(Order).filter(
-        Order.driver_id == current_driver.id,
-        Order.status.in_([OrderStatus.ASSIGNED.value, OrderStatus.IN_PROGRESS.value])
+    pending_deliveries = db.query(OrderModel).filter(
+        OrderModel.driver_id == current_driver.id,
+        OrderModel.status.in_([OrderStatus.ASSIGNED.value, OrderStatus.IN_PROGRESS.value])
     ).count()
     
     return {
@@ -414,17 +414,17 @@ async def get_driver_stats(
 
 @app.get("/stats/orders")
 async def get_order_stats(
-    current_store: User = Depends(get_current_store),
+    current_store: UserModel = Depends(get_current_store),
     db: Session = Depends(get_db)
 ):
     """Get order statistics for stores"""
-    base_query = db.query(Order).filter(Order.store_id == current_store.id)
+    base_query = db.query(OrderModel).filter(OrderModel.store_id == current_store.id)
     
     stats = {
-        "pending_orders": base_query.filter(Order.status == OrderStatus.PENDING).count(),
-        "assigned_orders": base_query.filter(Order.status == OrderStatus.ASSIGNED).count(),
-        "in_progress_orders": base_query.filter(Order.status == OrderStatus.IN_PROGRESS).count(),
-        "completed_orders": base_query.filter(Order.status == OrderStatus.DELIVERED).count()
+        "pending_orders": base_query.filter(OrderModel.status == OrderStatus.PENDING).count(),
+        "assigned_orders": base_query.filter(OrderModel.status == OrderStatus.ASSIGNED).count(),
+        "in_progress_orders": base_query.filter(OrderModel.status == OrderStatus.IN_PROGRESS).count(),
+        "completed_orders": base_query.filter(OrderModel.status == OrderStatus.DELIVERED).count()
     }
     
     return stats
