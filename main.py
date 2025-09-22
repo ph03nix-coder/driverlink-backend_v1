@@ -1,18 +1,19 @@
 import os
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, WebSocket, WebSocketDisconnect, Query, Form
-
-# Cargar variables de entorno
-load_dotenv()
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, WebSocket, WebSocketDisconnect, Query, Form, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, and_, true, false
 from datetime import datetime, timedelta
 from typing import List, Optional
+import os
+import shutil
+import os.path
+import uuid
 
-# Import all modules
+# Import database and models
 from database import engine, get_db, Base
 from models import User as UserModel, Driver as DriverModel, Order as OrderModel, OrderNotification as OrderNotificationModel, UserType, DriverStatus, OrderStatus, ApprovalStatus, Driver
 import schemas
@@ -21,11 +22,33 @@ from websocket_manager import manager, handle_websocket_connection
 from services.file_service import file_service
 from services.assignment_service import assignment_service  
 from services.external_api_service import external_api_service
-from osrm_client import osrm_client
+from osrm_client import OSRMClient
 import config
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
+
+def generate_order_number(db: Session) -> str:
+    """Generate a unique order number with format ORDER-YYYYMMDD-XXXX"""
+    from datetime import datetime
+    
+    # Get the last order number
+    last_order = db.query(OrderModel).order_by(OrderModel.id.desc()).first()
+    
+    # If no orders exist, start with 1
+    if not last_order:
+        sequence = 1
+    else:
+        # Extract the sequence number from the last order number
+        try:
+            sequence = int(last_order.order_number.split('-')[-1]) + 1 if last_order.order_number and last_order.order_number.startswith('ORDER-') else (last_order.id + 1)
+        except (IndexError, ValueError):
+            # If the format is unexpected, start with the next ID
+            sequence = (last_order.id if last_order.id else 0) + 1
+    
+    # Format: ORDER-YYYYMMDD-XXXX
+    today = datetime.utcnow().strftime("%Y%m%d")
+    return f"ORDER-{today}-{sequence:04d}"
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -261,16 +284,35 @@ async def create_order(
             "items_description": "2x Pizza, 1x Soda"
         }
     }
+    ```
+    
+    ## Sending Messages (Client → Server)
+    
+    ### Accept Order
+    ```json
+    {
+        "action": "accept_order",
+        "order_id": 123
+    }
+    ```
     """
     # Calculate estimated distance and duration
     pickup_location = (order.pickup_latitude, order.pickup_longitude)
     delivery_location = (order.delivery_latitude, order.delivery_longitude)
     
-    route_info = osrm_client.get_distance_and_duration(pickup_location, delivery_location)
+    route_info = OSRMClient.get_distance_and_duration(None, pickup_location, delivery_location)
+    
+    # Generate order data
+    order_data = order.dict()
+    order_data["order_number"] = generate_order_number(db)
+    
+    # Generate order number
+    order_number = generate_order_number(db)
     
     # Create order
     db_order = OrderModel(
-        **order.dict(),
+        **order_data,
+        # order_number=order_number,  # Usar el número generado automáticamente
         store_id=current_store.id,
         estimated_distance_km=route_info["distance_km"] if route_info else None,
         estimated_duration_minutes=route_info["duration_minutes"] if route_info else None
@@ -322,7 +364,7 @@ async def get_orders(
             return schemas.OrderListResponse(orders=[], total=0)
     
     if status:
-        query = query.filter(Order.status == status)
+        query = query.filter(OrderModel.status == status)
     
     total = query.count()
     orders = query.offset(offset).limit(limit).all()
@@ -336,17 +378,17 @@ async def get_order(
     db: Session = Depends(get_db)
 ):
     """Get specific order details"""
-    order = db.query(OrderModel).filter(OrderModel.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
     
-    # Check permissions
     if current_user.user_type == UserType.STORE and order.store_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     elif current_user.user_type == UserType.DRIVER:
         driver = db.query(DriverModel).filter(DriverModel.user_id == current_user.id).first()
         if not driver or order.driver_id != driver.id:
             raise HTTPException(status_code=403, detail="Access denied")
+
+    order = db.query(OrderModel).filter(OrderModel.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
     
     return order
 

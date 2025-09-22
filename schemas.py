@@ -57,7 +57,7 @@ class Driver(DriverBase):
 
 # Order schemas
 class OrderBase(BaseModel):
-    order_number: str = Field(..., min_length=1, max_length=50)
+    order_number: Optional[str] = Field(None, min_length=1, max_length=50)
     customer_name: str = Field(..., min_length=1, max_length=200)
     customer_phone: str = Field(..., min_length=10, max_length=15)
     pickup_address: str = Field(..., min_length=1)
