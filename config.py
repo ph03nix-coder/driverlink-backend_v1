@@ -1,5 +1,9 @@
 import os
 from typing import Optional
+from dotenv import load_dotenv
+
+# Cargar variables de entorno
+load_dotenv()
 
 # Database configuration
 DATABASE_URL = os.getenv("DATABASE_URL")
